@@ -2,57 +2,79 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Управляемый Тор</title>
+    <title>Мульти-фигурная модель частиц</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #050505; color: #aaa; font-family: sans-serif; }
-        canvas { display: block; }
-        
-        /* Стили панели управления */
-        #controls {
+        body { margin: 0; overflow: hidden; background-color: #050505; color: #aaa; font-family: 'Segoe UI', sans-serif; }
+        canvas { display: block; cursor: grab; }
+        canvas:active { cursor: grabbing; }
+
+        /* Панель управления */
+        #ui {
             position: absolute;
-            top: 10px;
-            right: 10px;
-            background: rgba(20, 20, 20, 0.85);
-            padding: 15px;
-            border-radius: 8px;
-            border: 1px solid #444;
-            width: 220px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            top: 15px;
+            left: 15px;
+            background: rgba(15, 15, 20, 0.9);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #333;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+            width: 260px;
             user-select: none;
+            backdrop-filter: blur(5px);
         }
-        .control-group { margin-bottom: 12px; }
-        label { display: block; font-size: 12px; margin-bottom: 4px; color: #fff; }
-        input[type=range] { width: 100%; cursor: pointer; }
+
+        h3 { margin: 0 0 15px 0; color: #fff; font-size: 16px; text-transform: uppercase; letter-spacing: 1px; }
+
+        .control-group { margin-bottom: 15px; }
+        label { display: block; font-size: 12px; margin-bottom: 5px; color: #ccc; }
         
-        #info {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            pointer-events: none;
-            color: rgba(255,255,255,0.5);
-            font-size: 14px;
+        select {
+            width: 100%;
+            padding: 8px;
+            background: #222;
+            color: #fff;
+            border: 1px solid #444;
+            border-radius: 4px;
+            cursor: pointer;
+            outline: none;
         }
+        select:hover { border-color: #666; }
+
+        input[type=range] { width: 100%; cursor: pointer; accent-color: #00d2ff; }
+
+        .hint { font-size: 11px; color: #666; margin-top: 10px; line-height: 1.4; }
+        .highlight { color: #00d2ff; }
     </style>
 </head>
 <body>
-    <div id="info">Вращайте фигуру мышкой</div>
 
-    <div id="controls">
+    <div id="ui">
+        <h3>Настройки модели</h3>
+        
         <div class="control-group">
-            <label>Скорость движения</label>
+            <label>Форма объема</label>
+            <select id="shapeSelect">
+                <option value="torus">Тор (Пончик)</option>
+                <option value="sphere">Сфера</option>
+                <option value="cube">Куб (Лиссажу)</option>
+                <option value="cylinder">Цилиндр</option>
+                <option value="cone">Конус</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label>Скорость анимации</label>
             <input type="range" id="speedRange" min="0" max="3" step="0.1" value="1">
         </div>
+
         <div class="control-group">
-            <label>Цвет (Оттенок)</label>
-            <input type="range" id="hueRange" min="0" max="360" step="1" value="200">
+            <label>Цветовой спектр</label>
+            <input type="range" id="hueRange" min="0" max="360" step="1" value="210">
         </div>
-        <div class="control-group">
-            <label>Яркость / Непрозрачность</label>
-            <input type="range" id="alphaRange" min="0.1" max="1" step="0.05" value="0.7">
-        </div>
-        <div class="control-group">
-            <label>Длина шлейфа (Fade)</label>
-            <input type="range" id="trailRange" min="0.02" max="0.3" step="0.01" value="0.1">
+        
+        <div class="hint">
+            <span class="highlight">ЛКМ + Драг</span> — Вращение<br>
+            <span class="highlight">Колесико</span> — Зум (Приближение)
         </div>
     </div>
 
@@ -64,88 +86,198 @@ const ctx = canvas.getContext('2d');
 const dpr = window.devicePixelRatio || 1;
 
 // --- КОНФИГУРАЦИЯ ---
-// Объект, который хранит текущие настройки с ползунков
 const config = {
+    shape: 'torus',
     speed: 1.0,
-    baseHue: 200,
-    alpha: 0.7,
-    fadeAmount: 0.1
+    baseHue: 210,
+    zoom: 1.0 // Множитель масштаба (Camera Z)
 };
 
-// Подключение ползунков
-document.getElementById('speedRange').oninput = (e) => config.speed = parseFloat(e.target.value);
-document.getElementById('hueRange').oninput = (e) => config.baseHue = parseFloat(e.target.value);
-document.getElementById('alphaRange').oninput = (e) => config.alpha = parseFloat(e.target.value);
-document.getElementById('trailRange').oninput = (e) => config.fadeAmount = parseFloat(e.target.value);
+// UI Elements
+const shapeSelect = document.getElementById('shapeSelect');
+const speedRange = document.getElementById('speedRange');
+const hueRange = document.getElementById('hueRange');
 
+shapeSelect.addEventListener('change', (e) => {
+    config.shape = e.target.value;
+    resetParticles(); // Перезапуск частиц при смене фигуры
+});
+speedRange.addEventListener('input', (e) => config.speed = parseFloat(e.target.value));
+hueRange.addEventListener('input', (e) => config.baseHue = parseFloat(e.target.value));
+
+// --- ПАРАМЕТРЫ КАМЕРЫ ---
 let width, height, cx, cy;
-const R = 180; 
-const r_tube = 70; 
-const numParticles = 600;
-const particles = [];
+// Используем углы Эйлера для простого вращения
+let camRotX = 0.5;
+let camRotY = 0.5;
 
-let angleX = 0.6;
-let angleY = 0.3;
-let mouseX = 0; let mouseY = 0;
+// Переменные мыши
 let isDragging = false;
+let lastX = 0;
+let lastY = 0;
+
+// --- ЧАСТИЦЫ ---
+const numParticles = 700;
+const particles = [];
+const R_GLOBAL = 180; // Базовый размер фигур
 
 class Particle {
     constructor() {
-        this.reset();
-        // Рандомизация начальной позиции
-        this.theta = Math.random() * Math.PI * 2;
-        this.phi = Math.random() * Math.PI * 2;
-        
+        this.init();
+        // Рандомизация начального времени, чтобы линии не шли синхронно
+        this.t = Math.random() * 100; 
         this.prevX = null;
         this.prevY = null;
     }
 
-    reset() {
-        this.dist = Math.sqrt(Math.random()) * r_tube;
+    init() {
+        // Параметры, уникальные для каждой частицы (радиус орбиты, скорость, сдвиг фазы)
         
-        // Базовые скорости (направление может быть разным)
-        this.baseSpeedTheta = (0.005 + Math.random() * 0.005) * (Math.random() < 0.5 ? 1 : -1);
-        this.baseSpeedPhi = (0.02 + Math.random() * 0.03) * (Math.random() < 0.5 ? 1 : -1);
+        // 1. Для сферических/радиальных систем
+        this.radius = Math.random() * R_GLOBAL; // Случайная глубина внутри объема
         
-        // Индивидуальное отклонение цвета для красоты
+        // 2. Для Куба (параметры Лиссажу)
+        this.lx = (Math.random() * 0.5 + 0.5) * (Math.random() < 0.5 ? 1 : -1);
+        this.ly = (Math.random() * 0.5 + 0.5) * (Math.random() < 0.5 ? 1 : -1);
+        this.lz = (Math.random() * 0.5 + 0.5) * (Math.random() < 0.5 ? 1 : -1);
+        
+        // 3. Скорости
+        this.speed = (0.01 + Math.random() * 0.02);
+        
+        // 4. Индивидуальный цвет
         this.hueOffset = Math.random() * 40 - 20; 
     }
 
     update() {
-        // Умножаем базовую скорость на глобальный коэффициент скорости
-        this.theta += this.baseSpeedTheta * config.speed;
-        this.phi += this.baseSpeedPhi * config.speed;
+        this.t += this.speed * config.speed;
+    }
+
+    // Главная функция: возвращает {x, y, z} в зависимости от выбранной фигуры
+    getPos3D() {
+        const t = this.t;
+        let x, y, z;
+
+        switch (config.shape) {
+            case 'torus': {
+                // Тор
+                const R_major = 140; 
+                const r_tube = 60;
+                // Заполняем объем: радиус трубки варьируется
+                // Используем синус для вариативности радиуса частицы, чтобы она "гуляла" внутри трубы
+                const current_r = (Math.sin(t * 0.3) * 0.5 + 0.5) * r_tube; 
+                
+                const theta = t;       // Угол по кольцу
+                const phi = t * 4;     // Угол вращения внутри трубы (спираль)
+                
+                const r_eff = R_major + current_r * Math.cos(phi);
+                x = r_eff * Math.cos(theta);
+                y = r_eff * Math.sin(theta);
+                z = current_r * Math.sin(phi);
+                break;
+            }
+            case 'sphere': {
+                // Сфера (Спираль по поверхности с изменением радиуса)
+                // Орбитальный радиус меняется синусоидой для заполнения объема
+                const r = this.radius; 
+                
+                // Сферические координаты
+                const lat = t;      // Широта
+                const lon = t * 0.5; // Долгота (медленнее)
+                
+                x = r * Math.sin(lat) * Math.cos(lon);
+                y = r * Math.sin(lat) * Math.sin(lon);
+                z = r * Math.cos(lat);
+                break;
+            }
+            case 'cube': {
+                // Куб (Кривые Лиссажу)
+                // Это создает красивое хаотичное движение, заполняющее куб
+                const size = 150;
+                x = size * Math.sin(t * this.lx);
+                y = size * Math.sin(t * this.ly);
+                z = size * Math.sin(t * this.lz);
+                break;
+            }
+            case 'cylinder': {
+                // Цилиндр
+                const h_max = 300;
+                const r = this.radius * 0.8; // Распределение по толщине
+                
+                const angle = t * 2;
+                // Высота пилообразная (вверх-вниз)
+                const h_norm = Math.sin(t * 0.5); // -1 to 1
+                const h = h_norm * (h_max / 2);
+
+                x = r * Math.cos(angle);
+                z = r * Math.sin(angle); // Z и X образуют круг
+                y = h; // Y - высота
+                break;
+            }
+            case 'cone': {
+                // Конус
+                const h_max = 300;
+                // Высота идет от -150 до 150
+                const h_osc = Math.sin(t * 0.5); 
+                const h = h_osc * (h_max / 2);
+                
+                // Радиус зависит от высоты (чем ниже, тем шире)
+                // Приводим h к диапазону 0..1 для расчета радиуса
+                const progress = (h + h_max/2) / h_max; // 0 (вершина) -> 1 (дно) или наоборот
+                // Делаем конус вершиной вверх (Y < 0 это верх в 3D обычно, но тут Y вниз растет на канвасе)
+                // Допустим вершина в Y = -150.
+                
+                const r_base = 150;
+                // Линейная зависимость радиуса от высоты
+                const current_r = (progress) * r_base * (Math.sin(this.radius)*0.5 + 0.5); 
+
+                const angle = t * 3;
+                
+                x = current_r * Math.cos(angle);
+                z = current_r * Math.sin(angle);
+                y = h;
+                break;
+            }
+        }
+        return {x, y, z};
     }
 
     draw(ctx, cosX, sinX, cosY, sinY) {
-        const r_effective = R + this.dist * Math.cos(this.phi);
-        let x = r_effective * Math.cos(this.theta);
-        let y = r_effective * Math.sin(this.theta);
-        let z = this.dist * Math.sin(this.phi);
+        const pos = this.getPos3D();
+        let x = pos.x;
+        let y = pos.y;
+        let z = pos.z;
 
+        // Вращение вокруг Y
         let x1 = x * cosY - z * sinY;
         let z1 = z * cosY + x * sinY;
+        
+        // Вращение вокруг X
         let y2 = y * cosX - z1 * sinX;
         let z2 = z1 * cosX + y * sinX;
 
-        const fov = 500;
-        const scale = fov / (fov + z2);
+        // Проекция
+        const fov = 600;
+        // Применяем зум к FOV или к координатам. Проще к Z перед делением.
+        // Или просто меняем scale.
+        // Эффективный Z с учетом зума (простой хак камеры)
+        let scale = (fov * config.zoom) / (fov + z2);
+        
         const x2d = x1 * scale + cx;
         const y2d = y2 * scale + cy;
 
-        if (z2 > -fov * 0.9 && scale > 0.1) {
-            if (this.prevX !== null && Math.abs(x2d - this.prevX) < 100) {
+        if (z2 > -fov && scale > 0) {
+            if (this.prevX !== null && Math.abs(x2d - this.prevX) < 150) {
                 ctx.beginPath();
                 ctx.moveTo(this.prevX, this.prevY);
                 ctx.lineTo(x2d, y2d);
                 
-                // ДИНАМИЧЕСКИЙ ЦВЕТ
-                // Используем config.baseHue + индивидуальное отклонение
-                // Используем config.alpha для яркости
+                // Цвет
                 const h = (config.baseHue + this.hueOffset) % 360;
-                ctx.strokeStyle = `hsla(${h}, 80%, 60%, ${config.alpha})`;
+                // Прозрачность зависит от глубины (z2) для лучшего 3D эффекта
+                const depthAlpha = Math.min(1, (scale - 0.2)); 
                 
-                ctx.lineWidth = scale * dpr * 1.5; 
+                ctx.strokeStyle = `hsla(${h}, 85%, 60%, ${depthAlpha})`;
+                ctx.lineWidth = scale * dpr * 1.5;
                 ctx.lineCap = 'round';
                 ctx.stroke();
             }
@@ -158,21 +290,60 @@ class Particle {
     }
 }
 
+function resetParticles() {
+    // При смене фигуры сбрасываем следы
+    ctx.fillStyle = '#050505';
+    ctx.fillRect(0, 0, width, height);
+    particles.forEach(p => {
+        p.prevX = null;
+        p.prevY = null;
+    });
+}
+
 function init() {
     resize();
     for (let i = 0; i < numParticles; i++) {
         particles.push(new Particle());
     }
+    
     window.addEventListener('resize', resize);
     
-    canvas.addEventListener('mousedown', e => { isDragging = true; mouseX = e.clientX; mouseY = e.clientY; });
-    window.addEventListener('mouseup', () => { isDragging = false; });
+    // --- УПРАВЛЕНИЕ МЫШЬЮ ---
+    canvas.addEventListener('mousedown', e => {
+        isDragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        canvas.style.cursor = 'grabbing';
+    });
+    
+    window.addEventListener('mouseup', () => {
+        isDragging = false;
+        canvas.style.cursor = 'grab';
+    });
+    
     window.addEventListener('mousemove', e => {
         if (!isDragging) return;
-        angleY += (e.clientX - mouseX) * 0.005;
-        angleX += (e.clientY - mouseY) * 0.005;
-        mouseX = e.clientX; mouseY = e.clientY;
+        
+        const deltaX = e.clientX - lastX;
+        const deltaY = e.clientY - lastY;
+        
+        // Вращение сцены
+        camRotY += deltaX * 0.005;
+        camRotX += deltaY * 0.005;
+        
+        lastX = e.clientX;
+        lastY = e.clientY;
     });
+
+    // --- ЗУМ (Колесико) ---
+    canvas.addEventListener('wheel', e => {
+        e.preventDefault();
+        // zoom in/out
+        const zoomSensitivity = 0.001;
+        config.zoom += e.deltaY * -zoomSensitivity;
+        // Ограничители зума
+        config.zoom = Math.min(Math.max(0.2, config.zoom), 5.0);
+    }, { passive: false });
     
     animate();
 }
@@ -185,20 +356,20 @@ function resize() {
     ctx.scale(dpr, dpr);
     cx = width / 2;
     cy = height / 2;
+    resetParticles();
 }
 
 function animate() {
-    // Используем config.fadeAmount для управления длиной хвоста
-    // Цвет фона должен быть черным (RGB 0,0,0), меняем только Alpha
-    ctx.fillStyle = `rgba(5, 5, 5, ${config.fadeAmount})`;
+    // Угасающий след
+    ctx.fillStyle = 'rgba(5, 5, 5, 0.15)'; 
     ctx.fillRect(0, 0, width, height);
 
     ctx.globalCompositeOperation = 'lighter';
 
-    const cosX = Math.cos(angleX);
-    const sinX = Math.sin(angleX);
-    const cosY = Math.cos(angleY);
-    const sinY = Math.sin(angleY);
+    const cosX = Math.cos(camRotX);
+    const sinX = Math.sin(camRotX);
+    const cosY = Math.cos(camRotY);
+    const sinY = Math.sin(camRotY);
 
     for (let p of particles) {
         p.update();
